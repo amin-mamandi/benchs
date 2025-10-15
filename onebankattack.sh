@@ -1,0 +1,136 @@
+#!/bin/bash
+
+# Base directories
+SDVBS_DIR="/home/$USER/sd-vbs/vision/benchmarks"
+MATMULT_DIR="/home/$USER/matmult"
+
+MAP_FILE="/home/$USER/IsolBench/bench/map.txt"
+
+# number of attackers
+ATTACKER_COUNT=3
+# cores to use for attackers
+ATTACKER_CORES=(1 2 3)
+
+WORKLOADS=("disparity" "mser" "sift" "stitch" "tracking")
+
+run_attackers() {
+    local attk=$1
+    local test_dir=$2
+
+    attacker_pids=()
+    for idx in $(seq 0 $((ATTACKER_COUNT-1))); do
+        core=${ATTACKER_CORES[$idx]:-$(($idx + 1))}
+        log="$test_dir/log-attack-core${core}.log"
+        # start attacker in background; adjust 'pll' args if needed
+        pll -e 0 -f "$MAP_FILE" -c "$core" -l 8 -m 512 -i 1000000000 -a "$attk" -u 64 >& "$log" &
+        pid=$!
+        attacker_pids+=("$pid")
+        echo "Started attacker on core $core with PID: $pid (log: $log)"
+    done
+
+    n_attackers=${#attacker_pids[@]}
+    echo "All $n_attackers attackers started: PIDs ${attacker_pids[*]}"
+    sleep 20
+}
+
+# run matrix victim
+run_matrix_victim() {
+    local dim=$1
+    local algo=$2
+    # adapt taskset/core binding as desired
+    taskset -c 0 "$MATMULT_DIR/matrix" -n "$dim" -a "$algo"
+}
+
+# run sd-vbs victim helper
+run_victim() {
+    local workload=$1
+
+    # Use 'cif' for localization and svm, otherwise 'fullhd'
+    local res_dir="fullhd"
+    case "$workload" in
+        localization|svm) res_dir="cif" ;;
+    esac
+
+    local input_dir="$SDVBS_DIR/$workload/data/$res_dir"
+    local exec="$SDVBS_DIR/$workload/data/$res_dir/$workload"
+
+    echo "running victim: $workload (input dir: $input_dir) ..."
+    "$exec" "$input_dir"
+}
+
+# kill attackers
+kill_attackers() {
+    for p in "${attacker_pids[@]:-}"; do
+        if kill -2 "$p" 2>/dev/null; then
+            echo "Sent SIGINT to PID $p"
+        else
+            echo "SIGINT failed for PID $p, trying SIGKILL"
+            kill -9 "$p" 2>/dev/null || true
+        fi
+    done
+    # give them a moment to terminate
+    sleep 3
+}
+
+# Argument parsing: expect matmult or sdvbs
+if [ "${1-}" = "matmult" ]; then
+
+    RESULTS_DIR="matmult-onebank-results"
+    mkdir -p "$RESULTS_DIR"
+
+    for dim in 1024 2048; do
+        for algo in 0 1 2 3 4; do
+            TEST_DIR="$RESULTS_DIR/dim${dim}_algo${algo}"
+            mkdir -p "$TEST_DIR"
+
+            for attk in "write" "read"; do
+                run_attackers "$attk" "$TEST_DIR"
+
+                # Run victim once while all attackers run
+                victim_log="$TEST_DIR/victim_with${n_attackers}_${attk}_attackers.log"
+                echo "running matrix victim (dim=$dim algo=$algo) under $n_attackers attackers..."
+                run_matrix_victim "$dim" "$algo" 2>&1 | tee -a "$victim_log" || true
+
+                # Kill attackers and run solo victim
+                kill_attackers
+
+                echo "solo run for dim $dim algo $algo"
+                victim_log="$TEST_DIR/victim_solo.log"
+                run_matrix_victim "$dim" "$algo" 2>&1 | tee -a "$victim_log" || true
+            done
+        done
+    done
+
+    echo "All matmult results saved in: $RESULTS_DIR"
+
+elif [ "${1-}" = "sdvbs" ]; then
+    
+    RESULTS_DIR="sdvbs-onebank-results"
+    mkdir -p "$RESULTS_DIR"
+
+    for workload in "${WORKLOADS[@]}"; do
+        echo ">>> Running workload: $workload"
+        TEST_DIR="$RESULTS_DIR/$workload"
+        mkdir -p "$TEST_DIR"
+
+        for attk in "write" "read"; do
+            run_attackers "$attk" "$TEST_DIR"
+
+            victim_log="$TEST_DIR/victim_with${n_attackers}_${attk}_attackers.log"
+            echo "running victim ($workload) with $n_attackers attackers doing $attk"
+            run_victim "$workload" 2>&1 | tee -a "$victim_log" || true
+
+            kill_attackers
+
+            # Solo run (no attackers)
+            echo "solo run for $workload"
+            victim_log="$TEST_DIR/victim_solo.log"
+            run_victim "$workload" 2>&1 | tee -a "$victim_log" || true
+        done
+    done
+
+    echo "All sd-vbs results saved in: $RESULTS_DIR"
+else
+    echo "Usage: $0 {matmult|sdvbs}"
+    exit 1
+fi
