@@ -1,10 +1,12 @@
 #!/bin/bash
 
 # Base directories
-SDVBS_DIR="/home/$USER/sd-vbs/vision/benchmarks"
-MATMULT_DIR="/home/$USER/matmult"
+SDVBS_DIR="/home/nvidia/sd-vbs/vision/benchmarks"
+MATMULT_DIR="/home/nvidia/matmult"
+LLAMA_DIR="/home/nvidia/llama.cpp/build/bin"
+MODEL_PATH="/home/nvidia/model/Llama-3.2-3b-instruct-q8_0.gguf"
 
-MAP_FILE="/home/$USER/IsolBench/bench/map.txt"
+MAP_FILE="/home/nvidia/IsolBench/bench/map.txt"
 
 # number of attackers
 ATTACKER_COUNT=3
@@ -12,6 +14,7 @@ ATTACKER_COUNT=3
 ATTACKER_CORES=(1 2 3)
 
 WORKLOADS=("disparity" "mser" "sift" "stitch" "tracking")
+# WORKLOADS=("disparity")
 
 run_attackers() {
     local attk=$1
@@ -20,9 +23,9 @@ run_attackers() {
     attacker_pids=()
     for idx in $(seq 0 $((ATTACKER_COUNT-1))); do
         core=${ATTACKER_CORES[$idx]:-$(($idx + 1))}
-        log="$test_dir/log-attack-core${core}.log"
+        log="$test_dir/log-${attk}-attack-core${core}.log"
         # start attacker in background; adjust 'pll' args if needed
-        pll -e 0 -f "$MAP_FILE" -c "$core" -l 8 -m 512 -i 1000000000 -a "$attk" -u 64 >& "$log" &
+        pll -f "$MAP_FILE" -c "$core" -l 22 -m 256 -i 1000000000 -a "$attk" -u 64 >& "$log" &
         pid=$!
         attacker_pids+=("$pid")
         echo "Started attacker on core $core with PID: $pid (log: $log)"
@@ -55,7 +58,15 @@ run_victim() {
     local exec="$SDVBS_DIR/$workload/data/$res_dir/$workload"
 
     echo "running victim: $workload (input dir: $input_dir) ..."
-    "$exec" "$input_dir"
+    taskset -c 0 "$exec" "$input_dir"
+}
+
+# run llama-bench victim
+run_llama_victim() {
+    local exec="$LLAMA_DIR/llama-bench"
+    echo "running llama-bench (model: $MODEL_PATH) ..."
+    # bind to core 0 like other victims
+    taskset -c 0 "$exec" -C 0 -pg 512,128 -m "$MODEL_PATH" -t 1 --progress -r 1
 }
 
 # kill attackers
@@ -72,7 +83,7 @@ kill_attackers() {
     sleep 3
 }
 
-# Argument parsing: expect matmult or sdvbs
+# Argument parsing: expect matmult or sdvbs or llama
 if [ "${1-}" = "matmult" ]; then
 
     RESULTS_DIR="matmult-allbanks-results"
@@ -130,7 +141,32 @@ elif [ "${1-}" = "sdvbs" ]; then
     done
 
     echo "All sd-vbs results saved in: $RESULTS_DIR"
+
+elif [ "${1-}" = "llama" ]; then
+
+    RESULTS_DIR="llama-allbanks-results"
+    mkdir -p "$RESULTS_DIR"
+
+    # single TEST_DIR for llama runs
+    TEST_DIR="$RESULTS_DIR/run"
+    mkdir -p "$TEST_DIR"
+
+    for attk in "write" "read"; do
+        run_attackers "$attk" "$TEST_DIR"
+
+        victim_log="$TEST_DIR/victim_with${n_attackers}_${attk}_attackers.log"
+        echo "running victim (llama-bench) with $n_attackers attackers doing $attk"
+        run_llama_victim 2>&1 | tee -a "$victim_log" || true
+
+        kill_attackers
+
+        # Solo run (no attackers)
+        echo "solo run for llama-bench"
+        victim_log="$TEST_DIR/victim_solo.log"
+        run_llama_victim 2>&1 | tee -a "$victim_log" || true
+    done
+
 else
-    echo "Usage: $0 {matmult|sdvbs}"
+    echo "Usage: $0 {matmult|sdvbs|llama}"
     exit 1
 fi

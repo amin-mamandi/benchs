@@ -6,12 +6,12 @@ echo 0 | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-32768kB/nr_
 echo 0 | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages 2>/dev/null || true
 
 # try 32 MB hugepages
-echo 64 | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-32768kB/nr_hugepages >/dev/null 2>&1 || true
+echo 64 | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages >/dev/null 2>&1 || true
 
 # fallback: if 32MB not supported, try 2MB
-if [ -f /sys/devices/system/node/node0/hugepages/hugepages-32768kB/nr_hugepages ]; then
-  if [ "$(cat /sys/devices/system/node/node0/hugepages/hugepages-32768kB/nr_hugepages)" -eq 0 ]; then
-    echo 256 | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages >/dev/null
+if [ -f /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages ]; then
+  if [ "$(cat /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages)" -eq 0 ]; then
+    echo 1024 | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages >/dev/null
   fi
 fi
 
@@ -22,7 +22,7 @@ if ! mountpoint -q /mnt/huge; then
      [ "$(cat /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages)" -gt 0 ]; then
     sudo mount -t hugetlbfs -o pagesize=2M none /mnt/huge
   else
-    sudo mount -t hugetlbfs -o pagesize=32M none /mnt/huge
+    sudo mount -t hugetlbfs -o pagesize=2M none /mnt/huge
   fi
 fi
 

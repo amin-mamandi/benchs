@@ -36,6 +36,28 @@ run_attackers() {
     sleep 20
 }
 
+run_unp_attackers() {
+	
+    local attk="$1"
+    local test_dir="$2"
+
+    # where the binary lives
+    local bin="/home/nvidia/drama/re/onebank_attacker"
+    if [[ ! -x "$bin" ]]; then
+        echo "ERROR: attacker binary not found or not executable: $bin" >&2
+        return 1
+    fi
+
+    local log="$test_dir/log-${attk}-unp.log"
+    local pid
+
+    # start attacker in background and capture PID
+    "$bin" -a "$attk" -c 1 -m 1024 -r 10 -k 1024 -s 256 -n 3 -t 13 &> "$log" &
+    pid=$!
+    
+    sleep 180 
+}
+
 # run matrix victim
 run_matrix_victim() {
     local dim=$1
@@ -79,6 +101,8 @@ kill_attackers() {
             kill -9 "$p" 2>/dev/null || true
         fi
     done
+
+    killall -2 onebank_attacker
     # give them a moment to terminate
     sleep 3
 }
@@ -86,7 +110,7 @@ kill_attackers() {
 # Argument parsing: expect matmult or sdvbs or llama
 if [ "${1-}" = "matmult" ]; then
 
-    RESULTS_DIR="matmult-onebank-results"
+    RESULTS_DIR="matmult-onebank-unp-results"
     mkdir -p "$RESULTS_DIR"
 
     for dim in 1024 2048; do
@@ -95,7 +119,7 @@ if [ "${1-}" = "matmult" ]; then
             mkdir -p "$TEST_DIR"
 
             for attk in "write" "read"; do
-                run_attackers "$attk" "$TEST_DIR"
+                run_unp_attackers "$attk" "$TEST_DIR"
 
                 # Run victim once while all attackers run
                 victim_log="$TEST_DIR/victim_with${n_attackers}_${attk}_attackers.log"
@@ -116,7 +140,7 @@ if [ "${1-}" = "matmult" ]; then
 
 elif [ "${1-}" = "sdvbs" ]; then
     
-    RESULTS_DIR="sdvbs-onebank-results"
+    RESULTS_DIR="sdvbs-onebank-unp-results"
     mkdir -p "$RESULTS_DIR"
 
     for workload in "${WORKLOADS[@]}"; do
@@ -125,7 +149,7 @@ elif [ "${1-}" = "sdvbs" ]; then
         mkdir -p "$TEST_DIR"
 
         for attk in "write" "read"; do
-            run_attackers "$attk" "$TEST_DIR"
+            run_unp_attackers "$attk" "$TEST_DIR"
 
             victim_log="$TEST_DIR/victim_with${n_attackers}_${attk}_attackers.log"
             echo "running victim ($workload) with $n_attackers attackers doing $attk"
@@ -144,7 +168,7 @@ elif [ "${1-}" = "sdvbs" ]; then
 
 elif [ "${1-}" = "llama" ]; then
 
-    RESULTS_DIR="llama-onebank-results"
+    RESULTS_DIR="llama-onebank-unp-results"
     mkdir -p "$RESULTS_DIR"
 
     # single TEST_DIR for llama runs
@@ -152,7 +176,7 @@ elif [ "${1-}" = "llama" ]; then
     mkdir -p "$TEST_DIR"
 
     for attk in "write" "read"; do
-        run_attackers "$attk" "$TEST_DIR"
+        run_unp_attackers "$attk" "$TEST_DIR"
 
         victim_log="$TEST_DIR/victim_with${n_attackers}_${attk}_attackers.log"
         echo "running victim (llama-bench) with $n_attackers attackers doing $attk"
